@@ -88,29 +88,50 @@ module.exports = function(RED) {
             
         }
         
+        function getInputDeviceArgs(msgDevice, isFromInput) {
+            let deviceArgs = [];
+            if (msgDevice !== undefined) {
+                if (msgDevice === "default") {
+                    deviceArgs.push("-d");
+                } else if (typeof msgDevice === "string") {
+                    deviceArgs.push("alsa", 'plughw:' + msgDevice.toString());
+                }
+            } else if (node.inputSourceRaw === "fromInput") {
+                // Skip - handled separately
+            } else if (node.inputSourceRaw === 'default') {
+                deviceArgs.push("-d");
+            } else if (node.inputSourceRaw === 'manualSource') {
+                let manualSourceInput = node.manualSource.trim().split(" ");
+                deviceArgs = deviceArgs.concat(manualSourceInput);
+            } else {
+                deviceArgs.push("alsa", node.inputSource);
+            }
+            return deviceArgs;
+        }
+
         function makeWav(msg, send, done){
-            
+
             let msg2 = {};
             let wavOutputBufferArr = [];
             let wavOutputBuffer = [];
-            
+
             try{
                 node.soxWav = spawn("sox",[node.byteOrder,"-e",node.encoding,"-c",node.channels,"-r",node.rate,"-b",node.bits,"-t","raw",node.filePath,"-t","wav","-"]);
-            } 
+            }
             catch (error) {
                 (done) ? done(error) : node.error(error);
                 return;
             }
-            
+
             node.soxWav.stderr.on('data', (data)=>{
-            
+
                 msg2.payload = data.toString();
                 (send) ? send([null,msg2]) : node.send([null,msg2]);
-                
+
             });
-            
+
             node.soxWav.on('close', function (code,signal) {
-                
+
                 wavOutputBuffer = Buffer.concat(wavOutputBufferArr);
                 msg.payload = wavOutputBuffer;
                 msg.format = "wav";
@@ -118,23 +139,47 @@ module.exports = function(RED) {
                 if (done) { done(); }
                 delete node.soxWav;
                 return;
-                
+
             });
-            
+
             node.soxWav.stdout.on('data', (data)=>{
-                
+
                 wavOutputBufferArr.push(data);
-                
+
             });
             return;
-            
+
         }
         
         node.spawnRecord = function(msg, send, done) {
-            
+
             let msg2 = {};
             let altPath = false;
-            
+            let useArgArr = [...node.argArr]; // Create a copy to avoid modifying the original
+
+            // Handle msg.device override
+            if (msg.hasOwnProperty("device")) {
+                // Rebuild argArr with custom device
+                useArgArr = [];
+                useArgArr.push("--buffer", node.buffer);
+                (node.debugOutput) ? useArgArr.push("-t") : useArgArr.push("-q", "-t");
+
+                if (node.inputSourceRaw === "fromInput") {
+                    let inputSource = ["raw", "-e", node.inputEncoding, "-c", node.inputChannels, "-r", node.inputRate, "-b", node.inputBits, "-"];
+                    useArgArr = useArgArr.concat(inputSource);
+                } else {
+                    useArgArr = useArgArr.concat(getInputDeviceArgs(msg.device));
+                }
+
+                (node.outputFormat === "file") ?
+                    useArgArr.push(node.byteOrder, "-e", node.encoding, "-c", node.channels, "-r", node.rate, "-b", node.bits, node.manualPath) :
+                    useArgArr.push(node.byteOrder, "-e", node.encoding, "-c", node.channels, "-r", node.rate, "-b", node.bits, "-t", "raw", "-");
+
+                if (node.silenceDetection == "something") { useArgArr.push("silence", "-l", "0", "1", node.silenceDuration, node.silenceThreshold + "%"); }
+                if (node.durationType == "limited") { useArgArr.push("trim", "0", node.durationLength); }
+                useArgArr.push("gain", node.gain);
+            }
+
             if (msg.hasOwnProperty("filename")) {
                 if (typeof msg.filename !== "string") {
                     node.warn("ignoring msg.filename as it is not a string, msg.filename should be a legal path to a file in string format");
@@ -143,15 +188,15 @@ module.exports = function(RED) {
                 } else {
                     let swap = 0;
                     if (node.inputSourceRaw === "fromInput") {
-                        swap = node.argArr.indexOf("-b", 11) + 2;
+                        swap = useArgArr.indexOf("-b", 11) + 2;
                     } else {
-                        swap = node.argArr.indexOf("-b") + 2;
+                        swap = useArgArr.indexOf("-b") + 2;
                     }
-                    node.argArr.splice(swap, 1, msg.filename);
+                    useArgArr.splice(swap, 1, msg.filename);
                     altPath = msg.filename;
                 }
             }
-            
+
             try{
                 if (msg.hasOwnProperty("options")) {
                     if (typeof msg.options !== "string") {
@@ -160,14 +205,14 @@ module.exports = function(RED) {
                         return;
                     }
                     let options = msg.options.trim().split(" ");
-                    let newArgArr = node.argArr.concat(options);
+                    let newArgArr = useArgArr.concat(options);
                     delete msg.options;
                     node.soxRecord = spawn("sox",newArgArr);
                 } else {
-                    node.soxRecord = spawn("sox",node.argArr);
+                    node.soxRecord = spawn("sox",useArgArr);
                 }
-                
-            } 
+
+            }
             catch (error) {
                 node_status(["error starting record command","red","ring"],1500);
                 (done) ? done(error) : node.error(error);
@@ -179,14 +224,24 @@ module.exports = function(RED) {
             } else {
                 node_status(["recording","blue","dot"]);
             }
-            
+
+            node.soxRecord.on('error', (error) => {
+                node_status(["sox record error","red","ring"],3000);
+                node.error("sox record process error: " + error.message);
+                delete node.soxRecord;
+            });
+
+            node.soxRecord.stdin.on('error', (error) => {
+                node.error("sox record stdin error: " + error.message);
+            });
+
             node.soxRecord.stderr.on('data', (data)=>{
-            
+
                 msg2.payload = data.toString();
                 (send) ? send([null,msg2]) : node.send([null,msg2]);
-                
+
             });
-            
+
             node.soxRecord.on('close', function (code,signal) {
                 
                 if(!node.notNow) { notNowWait(); }

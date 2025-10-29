@@ -93,25 +93,37 @@ module.exports = function(RED) {
             
         }
         
+        function getDeviceArgs(msgDevice) {
+            let deviceArgs = [];
+            if (msgDevice !== undefined) {
+                if (msgDevice === "default") {
+                    deviceArgs.push("-d");
+                } else if (typeof msgDevice === "string") {
+                    deviceArgs.push('-t', 'alsa', 'plughw:' + msgDevice.toString());
+                }
+            } else if (node.outputDeviceRaw === "default") {
+                deviceArgs.push("-d");
+            } else if (node.outputDeviceRaw === "manualOutput") {
+                let manualOutputDevice = node.manualOutput.trim().split(" ");
+                deviceArgs = deviceArgs.concat(manualOutputDevice);
+            } else {
+                deviceArgs.push('-t', 'alsa', node.outputDevice);
+            }
+            return deviceArgs;
+        }
+
         function playQueue(){
-            
+
             let queueItem = node.queue.shift();
             node.argArr = [];
             if (!node.debugOutput) { node.argArr.push('-q'); }
             node.argArr.push(queueItem.trim());
-            if (node.outputDeviceRaw === "default") {
-                node.argArr.push("-d")
-            } else if (node.outputDeviceRaw === "manualOutput") {
-                let manualOutputDevice = node.manualOutput.trim().split(" ");
-                node.argArr = node.argArr.concat(manualOutputDevice);
-            } else {
-                node.argArr.push('-t','alsa',node.outputDevice);
-            }
+            node.argArr = node.argArr.concat(getDeviceArgs());
             node.argArr.push('vol',node.gain);
             spawnPlay();
             if (node.queue.lenght === 0) { node.addN = 0; }
             return;
-            
+
         }
         
         function spawnPlay(){ 
@@ -131,18 +143,34 @@ module.exports = function(RED) {
                 node_status(["playing | " + node.queue.length + " in queue","blue","dot"]);
             }
             
+            node.soxPlay.on('error', (error) => {
+                node_status(["sox process error","red","ring"],3000);
+                node.error("sox play process error: " + error.message);
+                delete node.soxPlay;
+                if (node.queue.length !== 0) {
+                    playQueue();
+                }
+            });
+
             node.soxPlay.stderr.on('data', (data)=>{
-            
+
                 node.lastMsg.payload = data.toString();
                 node.send(node.lastMsg);
-                
+
             });
-            
+
             node.soxPlay.on('close', function (code,signal) {
-                
-                node.lastMsg.payload = "complete";
-                node.send(node.lastMsg);
-                node_status(["finished","green","dot"],1500);
+
+                if (code !== 0 && code !== null) {
+                    node.lastMsg.payload = "error";
+                    node.send(node.lastMsg);
+                    node_status(["sox exited with error code " + code,"red","ring"],3000);
+                    node.error("sox play exited with code " + code + (signal ? " signal " + signal : ""));
+                } else {
+                    node.lastMsg.payload = "complete";
+                    node.send(node.lastMsg);
+                    node_status(["finished","green","dot"],1500);
+                }
                 delete node.soxPlay;
                 if (node.queue.length !== 0) {
                     playQueue();
@@ -154,7 +182,7 @@ module.exports = function(RED) {
                     spawnPlay();
                 }
                 return;
-                
+
             });
             
             node.soxPlay.stdout.on('data', (data)=>{
@@ -164,17 +192,10 @@ module.exports = function(RED) {
         
         }
         
-        function spawnPlayStream(){
-            
+        function spawnPlayStream(msgDevice){
+
             node.argArr = ["-t","raw","-e",node.inputEncoding,"-c",node.inputChannels,"-r",node.inputRate,"-b",node.inputBits,"-"];
-            if (node.outputDeviceRaw === "default") {
-                node.argArr.push("-d")
-            } else if (node.outputDeviceRaw === "manualOutput") {
-                let manualOutputDevice = node.manualOutput.trim().split(" ");
-                node.argArr = node.argArr.concat(manualOutputDevice);
-            } else {
-                node.argArr.push('-t','alsa',node.outputDevice);
-            }
+            node.argArr = node.argArr.concat(getDeviceArgs(msgDevice));
             node.argArr.push('vol',node.gain);
             try{
                 node.soxPlayStream = spawn("sox",node.argArr);
@@ -185,22 +206,39 @@ module.exports = function(RED) {
                 return;
             }
             node_status(["playing stream","blue","dot"]);
-            
+
+            node.soxPlayStream.on('error', (error) => {
+                node_status(["sox stream error","red","ring"],3000);
+                node.error("sox play stream process error: " + error.message);
+                delete node.soxPlayStream;
+            });
+
+            node.soxPlayStream.stdin.on('error', (error) => {
+                node.error("sox stdin error: " + error.message);
+            });
+
             node.soxPlayStream.stderr.on('data', (data)=>{
-            
+
                 node.lastMsg.payload = data.toString();
                 node.send(node.lastMsg);
-                
+
             });
-            
+
             node.soxPlayStream.on('close', function (code,signal) {
-                
-                node.lastMsg.payload = "complete";
-                node.send(node.lastMsg);
-                node_status(["finished","green","dot"],1500);
+
+                if (code !== 0 && code !== null) {
+                    node.lastMsg.payload = "error";
+                    node.send(node.lastMsg);
+                    node_status(["sox stream exited with error code " + code,"red","ring"],3000);
+                    node.error("sox play stream exited with code " + code + (signal ? " signal " + signal : ""));
+                } else {
+                    node.lastMsg.payload = "complete";
+                    node.send(node.lastMsg);
+                    node_status(["finished","green","dot"],1500);
+                }
                 delete node.soxPlayStream;
                 return;
-                
+
             });
             
             node.soxPlayStream.stdout.on('data', (data)=>{
@@ -279,7 +317,7 @@ module.exports = function(RED) {
                             node.inputEncoding = msg.encoding;
                             node.inputRate = msg.rate;
                         }
-                        spawnPlayStream();
+                        spawnPlayStream(msg.device);
                     } else {
                         writeStdin(msg.payload);
                     }
@@ -289,7 +327,7 @@ module.exports = function(RED) {
                     if (done) { done(); }
                     return;
                 }
-                
+
             } else {
             
                 if (Buffer.isBuffer(msg.payload)) {
@@ -329,14 +367,7 @@ module.exports = function(RED) {
                     node.warn('no other items in the queue');
                 } else if (!node.soxPlay && typeof msg.payload === 'string') {
                     node.argArr.push(msg.payload.trim());
-                    if (node.outputDeviceRaw === "default") {
-                        node.argArr.push("-d")
-                    } else if (node.outputDeviceRaw === "manualOutput") {
-                        let manualOutputDevice = node.manualOutput.trim().split(" ");
-                        node.argArr = node.argArr.concat(manualOutputDevice);
-                    } else {
-                        node.argArr.push('-t','alsa',node.outputDevice);
-                    }
+                    node.argArr = node.argArr.concat(getDeviceArgs(msg.device));
                     node.argArr.push('vol',node.gain);
                     spawnPlay();
                 } else if (!node.soxPlay && Buffer.isBuffer(msg.payload)) {
@@ -346,21 +377,16 @@ module.exports = function(RED) {
                         (done) ? done("couldnt write tmp file") : node.error("couldnt write tmp file");
                         return;
                     }
-                    node.argArr.push(node.filePath,'-t','alsa',node.outputDevice,'vol',node.gain);
+                    node.argArr.push(node.filePath);
+                    node.argArr = node.argArr.concat(getDeviceArgs(msg.device));
+                    node.argArr.push('vol',node.gain);
                     spawnPlay();
                 } else if (node.soxPlay && node.startNew === 'start') {
                     node.argArr = [];
                     if (!node.debugOutput) { node.argArr.push('-q'); }
                     if (typeof msg.payload === 'string') {
                         node.argArr.push(msg.payload.trim());
-                        if (node.outputDeviceRaw === "default") {
-                            node.argArr.push("-d")
-                        } else if (node.outputDeviceRaw === "manualOutput") {
-                            let manualOutputDevice = node.manualOutput.trim().split(" ");
-                            node.argArr = node.argArr.concat(manualOutputDevice);
-                        } else {
-                            node.argArr.push('-t','alsa',node.outputDevice);
-                        }
+                        node.argArr = node.argArr.concat(getDeviceArgs(msg.device));
                         node.argArr.push('vol',node.gain);
                     } else if (Buffer.isBuffer(msg.payload)) {
                         try {
@@ -370,14 +396,7 @@ module.exports = function(RED) {
                             return;
                         }
                         node.argArr.push(node.filePath);
-                        if (node.outputDeviceRaw === "default") {
-                            node.argArr.push("-d")
-                        } else if (node.outputDeviceRaw === "manualOutput") {
-                            let manualOutputDevice = node.manualOutput.trim().split(" ");
-                            node.argArr = node.argArr.concat(manualOutputDevice);
-                        } else {
-                            node.argArr.push('-t','alsa',node.outputDevice);
-                        }
+                        node.argArr = node.argArr.concat(getDeviceArgs(msg.device));
                         node.argArr.push('vol',node.gain);
                     }
                     node.newPayload = msg.payload;

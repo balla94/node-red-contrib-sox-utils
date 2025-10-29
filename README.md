@@ -84,6 +84,69 @@ Both the record and convert node support adding additional effects that will be 
 
 You can use `msg.filename` in the input `msg` for both the record and convert node to dynamically set the name of the file to be written. This will overwrite the path set in the nodes config for this input msg. It will only work if the node is in output to file beforehand. The string in `msg.filename` has to be a full path to a writable location.
 
+## Dynamically setting the audio device with `msg.device`
+
+Both the play and record nodes now support dynamically setting the input/output device via the `msg.device` property. This allows you to override the device configured in the node settings on a per-message basis.
+
+### Usage for Play Node
+
+You can pass the output device in `msg.device` to specify which audio device should be used for playback. This will override the device selected in the node configuration.
+
+**Examples:**
+```javascript
+// Use the default audio device
+msg.device = "default";
+
+// Use a specific ALSA device (card 1, device 0)
+msg.device = "1,0";
+
+// Use a different ALSA device (card 2, device 0)
+msg.device = "2,0";
+```
+
+The device string should be in ALSA format (without the "plughw:" prefix, as this is added automatically). For example, `"1,0"` will be converted to `"plughw:1,0"`.
+
+### Usage for Record Node
+
+Similarly, you can pass the input device in `msg.device` to specify which audio device should be used for recording.
+
+**Examples:**
+```javascript
+// Use the default audio device
+msg.device = "default";
+
+// Use a specific ALSA microphone (card 1, device 0)
+msg.device = "1,0";
+
+// Use a USB microphone (card 2, device 0)
+msg.device = "2,0";
+```
+
+### Example Flow
+
+Here's a complete example showing how to dynamically select the audio device:
+
+```javascript
+// For playback on different devices
+var msg1 = {
+    payload: "/path/to/audio.wav",
+    device: "1,0"  // Play on card 1
+};
+
+var msg2 = {
+    payload: "/path/to/audio.wav",
+    device: "2,0"  // Play on card 2
+};
+
+// For recording from different devices
+var recordMsg = {
+    payload: "start",
+    device: "1,0"  // Record from card 1
+};
+```
+
+**Note:** When `msg.device` is provided, it takes precedence over the device configured in the node settings. If `msg.device` is not present, the node will use the device configured in its settings.
+
 ## Beta recording from a stream of raw audio audio chunks and listening to it
 
 ### Recording from a stream of raw audio chunks
